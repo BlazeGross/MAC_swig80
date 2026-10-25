@@ -1,0 +1,69 @@
+stages:
+  - test
+  - build
+  - analyze
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PYTHONUTF8: "1"
+  PYTHONUNBUFFERED: "1"
+  MPLBACKEND: "Agg"
+  IMAGE_TAG: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+
+test:
+  stage: test
+  image: python:3.13-slim-bookworm
+  cache:
+    key:
+      files:
+        - requirements.txt
+    paths:
+      - .cache/pip/
+  script:
+    - python -m pip install --require-hashes -r requirements.txt
+    - python -m pip check
+    - python -m unittest discover -s tests -v
+    - python swig80_backtest.py --help
+
+build-image:
+  stage: build
+  image: docker:27.5.1-cli
+  services:
+    - name: docker:27.5.1-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" --username "$CI_REGISTRY_USER" --password-stdin
+  script:
+    - docker build --pull --tag "$IMAGE_TAG" .
+    - docker run --rm "$IMAGE_TAG" --help
+    - docker push "$IMAGE_TAG"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+analyze:
+  stage: analyze
+  image:
+    name: "$IMAGE_TAG"
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: empty
+  script:
+    - python /app/swig80_backtest.py --out "$CI_PROJECT_DIR/output"
+  artifacts:
+    name: "swig80-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - output/sWIG80/
+    expire_in: 30 days
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+      allow_failure: true
